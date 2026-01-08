@@ -7,6 +7,8 @@ from transformers import (
     AutoModel,
 )
 from tqdm import tqdm
+from functools import lru_cache
+
 
 from typing import Iterable, List, Optional, Sequence, Dict, Protocol, runtime_checkable
 
@@ -16,6 +18,7 @@ MODEL_ID = "Salesforce/codet5p-110m-embedding"
 
 @runtime_checkable
 class Embedder(Protocol):
+    @lru_cache()
     def embed_test_cases(self, test_cases: Sequence[str]) -> torch.Tensor: ...
 
 
@@ -52,8 +55,6 @@ class CodeT5PlusEmbedder(Embedder):
     ):
         self.model_dir = model_dir
         self.dataset = dataset
-        _, version = dataset.split("_")
-        self.java_flag = version == "v0"
         self.cache_file = cache_file
         self.batch_size = batch_size
         self.device = resolve_device(device)
@@ -91,7 +92,7 @@ class CodeT5PlusEmbedder(Embedder):
             texts,
             padding=True,
             truncation=True,
-            max_length=512 if not self.java_flag else 2048,
+            max_length=2048,
             return_tensors="pt",
         ).to(self.device)
 
@@ -100,7 +101,9 @@ class CodeT5PlusEmbedder(Embedder):
 
         return embeddings.cpu()
 
+    @lru_cache(maxsize=None)
     def embed_test_cases(self, test_cases: Sequence[str]) -> torch.Tensor:
+        print('embedding')
         new_cache = {}
         texts_to_embed = []
         text_hashes = []

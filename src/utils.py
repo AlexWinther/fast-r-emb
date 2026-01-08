@@ -1,9 +1,12 @@
+import pickle
+import random
 from collections import defaultdict
-from typing import Callable, Sequence, Set, Literal, List, Dict, Protocol
 from dataclasses import dataclass
 from pathlib import Path
-import pickle
+from typing import Dict, List, Literal, Protocol, Sequence, Set
 
+import numpy as np
+import torch
 
 DATA_DIR = Path(__file__).resolve().parents[1] / "data"
 
@@ -56,6 +59,7 @@ class ReductionAlgorithm(Protocol):
         raw_test_suite: TestSuite,
         dimensions: int = 0,
         budget: int = 0,
+        random_seed: int = 42,
         verbose: bool = False,
     ) -> ReductionResult: ...
 
@@ -131,6 +135,15 @@ def load_test_suite(
         coverage_ids,
         fault_matrix,
     )
+
+
+def set_all_random_seeds(random_seed: int) -> None:
+    random.seed(random_seed)
+    np.random.seed(random_seed)
+    np.random.default_rng(random_seed)
+    torch.manual_seed(random_seed)
+    torch.cuda.manual_seed(random_seed)
+    torch.cuda.manual_seed_all(random_seed)
 
 
 def main():

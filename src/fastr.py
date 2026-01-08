@@ -6,6 +6,7 @@ from typing import Callable, List
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 from scipy.spatial.distance import cdist
 from sklearn.feature_extraction.text import HashingVectorizer
 from sklearn.random_projection import (
@@ -15,8 +16,11 @@ from sklearn.random_projection import (
 
 from embedding.codeT5 import CodeT5PlusEmbedder
 from hashing import min_hashing
-from metric_new import compute_metrics
-from utils import ReductionResult, TestSuite, load_test_suite
+from metric import compute_metrics
+from utils import ReductionResult, TestSuite, load_test_suite, set_all_random_seeds
+
+embedder = CodeT5PlusEmbedder()
+
 
 # --------------------  UTILS  --------------------
 
@@ -58,10 +62,14 @@ def load_signatures(input_file: Path) -> List[List[str]]:
     return signatures
 
 
-def euclidean_dist(v: torch.Tensor, w: torch.Tensor) -> np.ndarray:
-    result = cdist(np.atleast_2d(v), np.atleast_2d(w))
+def compute_distance(
+    v: torch.Tensor, w: torch.Tensor, metric="euclidean"
+) -> np.ndarray:
+    # Euclidean distance
+    if metric in ("euclidean", "cosine"):
+        return cdist(np.atleast_2d(v), np.atleast_2d(w), metric=metric)
 
-    return result
+    raise ValueError(f"Metric has to be one of [euclidean, cosine] and got {metric}")
 
 
 def ns_to_sec(ns: float) -> float:
@@ -88,88 +96,103 @@ def preparation_FAST_R(test_suite: TestSuite, dimensions: int = 0) -> torch.Tens
 
 
 def preparation_codet5p(test_suite: TestSuite, dimensions: int = 0) -> torch.Tensor:
-    embedder = CodeT5PlusEmbedder(dataset=f"{test_suite.program}_{test_suite.version}")
-
-    return embedder.embed_test_cases(list(test_suite.test_cases))
+    embedder.dataset = f"{test_suite.program}_{test_suite.version}"
+    embedder.cache = embedder._load_cache()
+    return embedder.embed_test_cases(tuple(test_suite.test_cases))
 
 
 # ---------------  REDUCTION PHASE  ---------------
 
 
 # FAST++ reduction phase
-def reduction_plus_plus(test_suite: torch.Tensor, budget: int) -> List[int]:
+def reduction_plus_plus(
+    test_suite: torch.Tensor, budget: int, dist_metric: str = "euclidean"
+) -> List[int]:
+    n = test_suite.shape[0]
     reduced_test_suite = []
 
-    # distance to closest center
+    # Dict to keep track of closest selection
     D = defaultdict(lambda: float("Inf"))
 
-    # select first center randomly
-    selectedTC = random.randint(0, len(test_suite) - 1)
-    reduced_test_suite.append(selectedTC + 1)
-    D[selectedTC] = 0
+    # first center
+    selected = random.randrange(n)
+    reduced_test_suite.append(selected + 1)
+    D[selected] = 0.0
 
-    while len(reduced_test_suite) < budget:
-        # k-means++ tc reductionCS
+    while len(reduced_test_suite) < min(budget, n):
+        # Update nearest-selected distances
         norm = 0
-        for tc in range(len(test_suite)):
-            if D[tc] != 0:
-                dist = euclidean_dist(test_suite[tc, :], test_suite[selectedTC, :])
-                if dist < D[tc]:
-                    D[tc] = dist[0][0]
-            norm += D[tc]
+        for i in range(len(test_suite)):
+            if D[i] != 0:
+                di = compute_distance(
+                    test_suite[i, :], test_suite[selected, :], metric=dist_metric
+                )[0][0]
+                if di < D[i]:
+                    D[i] = di
+            norm += D[i]
 
         # safe exit point (if all distances are 0)
         # (but not all test cases have been selected)
         if norm == 0:
-            extraTCS = list(
-                set(range(1, len(test_suite) + 1)) - set(reduced_test_suite)
-            )
-            random.shuffle(extraTCS)
-            reduced_test_suite.extend(extraTCS[: budget - len(reduced_test_suite)])
+            remaining = list(set(range(1, n + 1)) - set(reduced_test_suite))
+            random.shuffle(remaining)
+            reduced_test_suite.extend(remaining[: budget - len(reduced_test_suite)])
             break
 
         c = 0
-        coinToss = random.random() * norm
-        for tc, dist in D.items():
-            if coinToss < c + dist:
-                reduced_test_suite.append(tc + 1)
-                D[tc] = 0
-                selectedTC = tc
+        coin = random.random() * norm
+        for i, di in D.items():
+            w = di * di
+            if coin < c + w:
+                reduced_test_suite.append(i + 1)
+                D[i] = 0
+                selected = i
                 break
-            c += dist
+            c += w
 
     return reduced_test_suite
 
 
 # FAST-CS Reduction phase
-def reduction_cs(test_suite: torch.Tensor, budget: int) -> List[int]:
-    # compute center of mass (com)
-    mu = torch.mean(test_suite, dim=0)
-    print(mu.shape)
+def reduction_cs(
+    test_suite: torch.Tensor, budget: int, dist_metric: str = "cosine"
+) -> List[int]:
+    n = test_suite.shape[0]
+    k = min(budget, n)
+
+    X = test_suite
+
+    mu = X.mean(dim=0)
+
+    if dist_metric == "cosine":
+        X = F.normalize(X, p=2, dim=1)
+        mu = F.normalize(X.mean(dim=0), p=2, dim=0)
+    elif dist_metric == "euclidean":
+        mu = X.mean(dim=0)
+    else:
+        raise ValueError(f"Undefined metric for CS sampling: {dist_metric}")
 
     # compute distances to com
-    D = euclidean_dist(test_suite, mu)
-    D_squared = D**2
+    D = compute_distance(test_suite, mu, metric=dist_metric)
+    D2 = D * D
 
     # compute probabilities of being sampled
-    uniform = 1 / (2 * len(test_suite))
-    proportional_squared_distance = D_squared / np.sum(D_squared)
+    uniform = 1 / (2 * n)
+    D2_sum = float(D2.sum())
 
-    # Normalize to sum to 1
-    P = uniform + proportional_squared_distance
-    P = (P / P.sum()).flatten()
+    if D2_sum == 0.0:
+        P = torch.full((n,), 1.0 / n, dtype=torch.float64)
+    else:
+        proportional = D2 / D2_sum
+
+        # Normalize to sum to 1
+        P = uniform + proportional
+        P = (P / P.sum()).flatten()
 
     # proportional sampling
-    reducedTS = list(
-        np.random.choice(
-            list(range(1, len(test_suite) + 1)),
-            size=min(budget, len(test_suite)),
-            p=P,
-            replace=False,
-        ).tolist()
-    )
+    reduced = np.random.choice(np.arange(n), size=k, p=P, replace=False) + 1
 
-    return reducedTS
+    return reduced.tolist()
 
 
 # -----------  Full Algorithm Template  -----------
@@ -177,14 +200,18 @@ def reduction_cs(test_suite: torch.Tensor, budget: int) -> List[int]:
 
 def preperation_reduction_algorithm(
     prep_phase, reduction_phase, algo_name: str
-) -> Callable[[TestSuite, int, int, bool], ReductionResult]:
+) -> Callable[[TestSuite, int, int, int, bool], ReductionResult]:
     def algo(
         raw_test_suite: TestSuite,
         dimensions: int = 0,
         budget: int = 0,
+        dist_metric: str = "euclidean",
+        random_seed: int = 0,
         verbose: bool = False,
         # cache: bool = False,
     ) -> ReductionResult:
+        set_all_random_seeds(random_seed)
+
         prep_start = perf_counter_ns()
         test_suite = prep_phase(raw_test_suite, dimensions=dimensions)
         prep_end = perf_counter_ns()
@@ -199,7 +226,7 @@ def preperation_reduction_algorithm(
             budget = len(test_suite)
 
         reduction_start = perf_counter_ns()
-        reduced_test_suite = reduction_phase(test_suite, budget)
+        reduced_test_suite = reduction_phase(test_suite, budget, dist_metric)
         reduction_end = perf_counter_ns()
         reduction_time_ns = reduction_end - reduction_start
 
@@ -221,6 +248,7 @@ def fast_pp(
     raw_test_suite: TestSuite,
     dimensions: int = 0,
     budget: int = 0,
+    random_seed: int = 0,
     verbose: bool = False,
     # cache: bool = False,
 ) -> ReductionResult:
@@ -230,7 +258,7 @@ def fast_pp(
         algo_name="FAST++",
     )
 
-    return algo(raw_test_suite, dimensions, budget, verbose)
+    return algo(raw_test_suite, dimensions, budget, random_seed, verbose)
 
 
 # Full FAST++ implementation
@@ -238,6 +266,7 @@ def fast_pp_emb(
     raw_test_suite: TestSuite,
     dimensions: int = 0,
     budget: int = 0,
+    random_seed: int = 0,
     verbose: bool = False,
     # cache: bool = False,
 ) -> ReductionResult:
@@ -247,7 +276,7 @@ def fast_pp_emb(
         algo_name="embedding FAST++",
     )
 
-    return algo(raw_test_suite, dimensions, budget, verbose)
+    return algo(raw_test_suite, dimensions, budget, random_seed, verbose)
 
 
 # Full FAST-CS implementation
@@ -255,6 +284,7 @@ def fast_cs(
     raw_test_suite: TestSuite,
     dimensions: int = 0,
     budget: int = 0,
+    random_seed: int = 0,
     verbose: bool = False,
     # cache: bool = False,
 ) -> ReductionResult:
@@ -262,7 +292,7 @@ def fast_cs(
         prep_phase=preparation_FAST_R, reduction_phase=reduction_cs, algo_name="FAST-CS"
     )
 
-    return algo(raw_test_suite, dimensions, budget, verbose)
+    return algo(raw_test_suite, dimensions, budget, random_seed, verbose)
 
 
 # Full FAST-CS implementation
@@ -270,6 +300,7 @@ def fast_cs_emb(
     raw_test_suite: TestSuite,
     dimensions: int = 0,
     budget: int = 0,
+    random_seed: int = 0,
     verbose: bool = False,
     # cache: bool = False,
 ) -> ReductionResult:
@@ -279,7 +310,7 @@ def fast_cs_emb(
         algo_name="embedding FAST-CS",
     )
 
-    return algo(raw_test_suite, dimensions, budget, verbose)
+    return algo(raw_test_suite, dimensions, budget, random_seed, verbose)
 
 
 def main():
@@ -295,7 +326,3 @@ def main():
     reduction_result = fast_pp_emb(test_suite, budget=budget)
     result = compute_metrics(test_suite, reduction_result)
     print(result)
-
-
-if __name__ == "__main__":
-    main()

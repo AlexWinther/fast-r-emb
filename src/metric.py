@@ -1,5 +1,6 @@
 from typing import Dict
 from utils import ReductionResult, TestSuite
+import pandas as pd
 
 
 # First Faulty Test (FFT)
@@ -65,10 +66,15 @@ def apfd(test_suite: TestSuite, reduction_result: ReductionResult) -> float:
 
 def compute_metrics(
     test_suite: TestSuite, reduction_result: ReductionResult
-) -> Dict[str, float]:
-    return {
-        "fft": fft(test_suite, reduction_result),
-        "tsr": tsr(test_suite, reduction_result),
-        "fdl": fdl(test_suite, reduction_result),
-        "apfd": apfd(test_suite, reduction_result),
-    }
+) -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "preperation_time_ns": reduction_result.prep_time_ns,
+            "reduction_time_ns": reduction_result.red_time_ns,
+            "fft": fft(test_suite, reduction_result),
+            "tsr": tsr(test_suite, reduction_result),
+            "fdl": fdl(test_suite, reduction_result),
+            "apfd": apfd(test_suite, reduction_result),
+        },
+        index=pd.Series([0]),
+    )
