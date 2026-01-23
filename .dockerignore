@@ -1,0 +1,39 @@
+# Version control
+.git/
+.gitignore
+
+# Python cache and bytecode
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Jupyter notebooks (if not needed in container)
+*.ipynb
+
+# Results and outputs (will be mounted at runtime)
+data/results-*/
+outputs/
+
+# Logs
+*.log
+
+# Temporary files
+*.tmp
+*.temp
+
+# Documentation (optional for container)
+*.md
+!README.md

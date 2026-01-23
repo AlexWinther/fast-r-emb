@@ -4,6 +4,7 @@ from pathlib import Path
 from time import perf_counter_ns
 from typing import Callable, List
 
+# import faiss
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -79,7 +80,9 @@ def ns_to_sec(ns: float) -> float:
 # --------------- PREPERATION PHASE ---------------
 
 
-def preparation_FAST_R(test_suite: TestSuite, dimensions: int = 0) -> torch.Tensor:
+def preparation_FAST_R(
+    test_suite: TestSuite, dimensions: int = 0, seed: int = 0
+) -> torch.Tensor:
     vectorizer = HashingVectorizer()  # compute "TF"
     test_cases = vectorizer.fit_transform(test_suite.test_cases)
 
@@ -95,10 +98,10 @@ def preparation_FAST_R(test_suite: TestSuite, dimensions: int = 0) -> torch.Tens
     return torch.tensor(projectedTestSuite.toarray())
 
 
-def preparation_codet5p(test_suite: TestSuite, dimensions: int = 0) -> torch.Tensor:
-    embedder.dataset = f"{test_suite.program}_{test_suite.version}"
-    embedder.cache = embedder._load_cache()
-    return embedder.embed_test_cases(tuple(test_suite.test_cases))
+def preparation_codet5p(
+    test_suite: TestSuite, dimensions: int = 0, seed: int = 0
+) -> torch.Tensor:
+    return embedder.embed_test_cases(tuple(test_suite.test_cases), seed=seed)
 
 
 # ---------------  REDUCTION PHASE  ---------------
@@ -129,7 +132,7 @@ def reduction_plus_plus(
                 )[0][0]
                 if di < D[i]:
                     D[i] = di
-            norm += D[i]
+            norm += D[i] * D[i]
 
         # safe exit point (if all distances are 0)
         # (but not all test cases have been selected)
@@ -195,17 +198,64 @@ def reduction_cs(
     return reduced.tolist()
 
 
+# def reduction_faiss(
+#     test_suite: torch.Tensor, budget: int = 0, dist_metric: str = "euclidean"
+# ) -> List[int]:
+#     arr = test_suite.float()
+#     faiss.normalize_L2(arr)
+#
+#     n, dim = arr.shape
+#     k = n if budget == 0 else budget
+#
+#     selected_indices = [random.randrange(n)]
+#     selected_set = set(selected_indices)
+#     remaining_set = set(range(n)) - selected_set
+#     remaining_indices = list(remaining_set)
+#
+#     while len(selected_indices) < k:
+#         # Compute mean of selected
+#         mean_vec = np.mean(arr[selected_indices], axis=0, keepdims=True)
+#         faiss.normalize_L2(mean_vec)
+#         neg_mean = -mean_vec.astype("float32")
+#
+#         # Create a new index with remaining only
+#         remaining_arr = arr[remaining_indices]
+#         index = faiss.IndexFlatIP(dim)
+#         index.add(remaining_arr)
+#
+#         # Search top diverse candidates
+#         num_to_select = min(1, k - len(selected_indices))
+#         _, I = index.search(neg_mean, num_to_select)
+#         print(I)
+#         exit()
+#
+#         newly_selected = []
+#         for i in I[0]:
+#             idx = remaining_indices[i]  # Map back to global index
+#             if idx not in selected_set:
+#                 selected_indices.append(idx)
+#                 selected_set.add(idx)
+#                 newly_selected.append(idx)
+#
+#         remaining_set -= set(newly_selected)
+#         remaining_indices = list(remaining_set)
+#
+#     return selected_indices
+
+
 # -----------  Full Algorithm Template  -----------
 
 
 def preperation_reduction_algorithm(
-    prep_phase, reduction_phase, algo_name: str
+    prep_phase,
+    reduction_phase,
+    algo_name: str,
+    dist_metric: str = "euclidean",
 ) -> Callable[[TestSuite, int, int, int, bool], ReductionResult]:
     def algo(
         raw_test_suite: TestSuite,
         dimensions: int = 0,
         budget: int = 0,
-        dist_metric: str = "euclidean",
         random_seed: int = 0,
         verbose: bool = False,
         # cache: bool = False,
@@ -213,7 +263,7 @@ def preperation_reduction_algorithm(
         set_all_random_seeds(random_seed)
 
         prep_start = perf_counter_ns()
-        test_suite = prep_phase(raw_test_suite, dimensions=dimensions)
+        test_suite = prep_phase(raw_test_suite, dimensions=dimensions, seed=random_seed)
         prep_end = perf_counter_ns()
         prep_time_ns = prep_end - prep_start
 
@@ -226,7 +276,9 @@ def preperation_reduction_algorithm(
             budget = len(test_suite)
 
         reduction_start = perf_counter_ns()
-        reduced_test_suite = reduction_phase(test_suite, budget, dist_metric)
+        reduced_test_suite = reduction_phase(
+            test_suite, budget, dist_metric=dist_metric
+        )
         reduction_end = perf_counter_ns()
         reduction_time_ns = reduction_end - reduction_start
 
@@ -311,6 +363,44 @@ def fast_cs_emb(
     )
 
     return algo(raw_test_suite, dimensions, budget, random_seed, verbose)
+
+
+def random_baseline(
+    raw_test_suite: TestSuite,
+    dimensions: int = 0,
+    budget: int = 0,
+    random_seed: int = 0,
+    verbose: bool = False,
+    # cache: bool = False,
+) -> ReductionResult:
+    algo = preperation_reduction_algorithm(
+        prep_phase=lambda test_suite, dimensions, seed: len(test_suite.test_cases),
+        reduction_phase=lambda test_suite, budget, dist_metric: np.random.choice(
+            np.arange(test_suite), size=budget, replace=False
+        )
+        + 1,
+        algo_name="random_baseline",
+    )
+
+    return algo(raw_test_suite, dimensions, budget, random_seed, verbose)
+
+
+# # FAISS implementation
+# def faiss_emb(
+#     raw_test_suite: TestSuite,
+#     dimensions: int = 0,
+#     budget: int = 0,
+#     random_seed: int = 0,
+#     verbose: bool = False,
+#     # cache: bool = False,
+# ) -> ReductionResult:
+#     algo = preperation_reduction_algorithm(
+#         prep_phase=preparation_codet5p,
+#         reduction_phase=reduction_faiss,
+#         algo_name="embedding FAISS",
+#     )
+#
+#     return algo(raw_test_suite, dimensions, budget, random_seed, verbose)
 
 
 def main():

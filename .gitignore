@@ -10,3 +10,7 @@ wheels/
 .venv
 data/embedding
 data/embedding/grep_v3
+
+data/results*
+data/plots*
+

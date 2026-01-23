@@ -2,24 +2,26 @@ import hashlib
 import os
 import torch
 import pickle
+from functools import lru_cache
 from transformers import (
     AutoTokenizer,
     AutoModel,
 )
 from tqdm import tqdm
-from functools import lru_cache
 
 
 from typing import Iterable, List, Optional, Sequence, Dict, Protocol, runtime_checkable
 
-# MODEL_ID = "Salesforce/codet5p-220m"  # CodeT5+ 220M
 MODEL_ID = "Salesforce/codet5p-110m-embedding"
+# MODEL_ID = "Salesforce/codet5p-220m"  # CodeT5+ 220M
 
 
 @runtime_checkable
 class Embedder(Protocol):
     @lru_cache()
-    def embed_test_cases(self, test_cases: Sequence[str]) -> torch.Tensor: ...
+    def embed_test_cases(
+        self, test_cases: Sequence[str], seed: int
+    ) -> torch.Tensor: ...
 
 
 def resolve_device(arg_device: str | None) -> str:
@@ -50,7 +52,7 @@ class CodeT5PlusEmbedder(Embedder):
         model_dir: str = MODEL_ID,
         dataset: str = "grep_v3",
         cache_file: str = "codet5_embeddings.pkl",
-        batch_size: int = 8,
+        batch_size: int = 16,
         device: Optional[str] = None,
     ):
         self.model_dir = model_dir
@@ -67,6 +69,8 @@ class CodeT5PlusEmbedder(Embedder):
         self.model.eval()
 
         self.cache = self._load_cache()
+
+        self.caching = True
 
     def _get_hash(self, text: str) -> str:
         return hashlib.sha256(text.encode("utf-8")).hexdigest()
@@ -92,7 +96,7 @@ class CodeT5PlusEmbedder(Embedder):
             texts,
             padding=True,
             truncation=True,
-            max_length=2048,
+            max_length=512,  # Maximum input length defined in model config on huggingface
             return_tensors="pt",
         ).to(self.device)
 
@@ -102,34 +106,45 @@ class CodeT5PlusEmbedder(Embedder):
         return embeddings.cpu()
 
     @lru_cache(maxsize=None)
-    def embed_test_cases(self, test_cases: Sequence[str]) -> torch.Tensor:
-        print('embedding')
-        new_cache = {}
-        texts_to_embed = []
-        text_hashes = []
+    def embed_test_cases(
+        self, test_cases: Sequence[str], seed: int = 0
+    ) -> torch.Tensor:
+        texts_to_embed = list(test_cases)
 
-        for text in test_cases:
-            h = self._get_hash(text)
-            text_hashes.append(h)
-            if h not in self.cache:
-                texts_to_embed.append(text)
+        if self.caching:
+            print(f"embedding for seed {seed}")
+            new_cache = {}
+            texts_to_embed = []
+            text_hashes = []
 
-        if texts_to_embed:
-            for batch in tqdm(
-                batched(texts_to_embed, self.batch_size),
-                total=len(texts_to_embed) // self.batch_size + 1,
-            ):
-                embeddings = self._embed_batch(batch)
+            for text in test_cases:
+                h = self._get_hash(text)
+                text_hashes.append(h)
+                if h not in self.cache:
+                    texts_to_embed.append(text)
+
+        all_embeddings = []
+        for batch in tqdm(
+            batched(texts_to_embed, self.batch_size),
+            total=len(texts_to_embed) // self.batch_size + 1,
+        ):
+            embeddings = self._embed_batch(batch)
+            all_embeddings.extend(embeddings)
+
+            if self.caching:
                 for text, emb in zip(batch, embeddings):
                     h = self._get_hash(text)
                     self.cache[h] = emb
 
-        # Clean cache to only keep relevant hashes
-        for h in text_hashes:
-            new_cache[h] = self.cache[h]
+        if self.caching:
+            # Clean cache to only keep relevant hashes
+            for h in text_hashes:
+                new_cache[h] = self.cache[h]
 
-        self.cache = new_cache
-        self._save_cache()
+            self.cache = new_cache
+            self._save_cache()
 
-        # Return embeddings in input order
-        return torch.stack([self.cache[h] for h in text_hashes])
+            # Return embeddings in input order
+            return torch.stack([self.cache[h] for h in text_hashes])
+
+        return torch.stack(all_embeddings)

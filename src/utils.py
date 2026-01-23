@@ -106,6 +106,13 @@ def _load_fault_matrix(
     return fault_matrix
 
 
+def _filter_out_license(test_case: str) -> str:
+    if test_case.startswith("/*"):
+        return "*/".join(test_case.split("*/")[1:])
+
+    return test_case
+
+
 # utility function to load test suite
 def load_test_suite(
     program: str, version: str, coverage_type: Coverage_type = None
@@ -116,6 +123,9 @@ def load_test_suite(
 
     with open(bbox_file) as f:
         test_cases = list(map(lambda x: x.strip(), f.readlines()))
+
+        # if java_flag:
+        #     test_cases = list(map(_filter_out_license, test_cases))
 
     coverage_ids = None
     if coverage_type:

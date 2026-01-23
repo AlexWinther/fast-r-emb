@@ -1,149 +1,137 @@
-from math import ceil
-import pandas as pd
-from typing import Sequence, Tuple
+from dataclasses import dataclass
 from datetime import datetime
+from math import ceil
+from typing import List, Sequence, Tuple
+import os
+import platform
+import json
+from pathlib import Path
+import hashlib
 
-from tqdm.auto import tqdm
-from fastr import fast_cs, fast_cs_emb, fast_pp, fast_pp_emb
-from metric import compute_metrics
-from utils import (
-    D4J,
-    SIR,
-    ReductionAlgorithm,
-    TestSuite,
-    load_test_suite,
-)
 
+from tqdm import tqdm
+import numpy as np
+import pandas as pd
 import rich.traceback
+from rich import print
 from rich.console import Console
 from rich.progress import (
-    Progress,
     BarColumn,
+    Progress,
     TextColumn,
     TimeElapsedColumn,
     TimeRemainingColumn,
 )
-from rich import print
-import numpy as np
+from fastr import fast_cs_emb, fast_pp_emb
+from metric import compute_metrics
+from utils import D4J, SIR, ReductionAlgorithm, TestSuite, load_test_suite
 
 rich.traceback.install()
 
 
-def num_test_cases_from_budget(test_suite: TestSuite, budget: float) -> int:
-    """Compute the number of test cases to select during reduction.
+# -----------------------------
+# Method metadata (separate factors for analysis)
+# -----------------------------
 
-    Args:
-        test_suite (TestSuite): The test suite that will be reduced.
-        budget (float): The percentage of the test suite that should be selected.
 
-    Return:
-        int: The number of tests to be selected.
+@dataclass(frozen=True)
+class MethodSpec:
+    name: str  # unique label (e.g., "cs_tf_srp")
+    algorithm_family: str  # "cs" or "pp"
+    representation: str  # "tf_srp" or "emb"
+    fn: ReductionAlgorithm
+
+
+METHODS: List[MethodSpec] = [
+    # MethodSpec(
+    #     name="random_baseline",
+    #     algorithm_family="random",
+    #     representation="SuiteLength",
+    #     fn=random_baseline,
+    # ),
+    # MethodSpec(
+    #     name="cs_tf_srp", algorithm_family="cs", representation="tf_srp", fn=fast_cs
+    # ),
+    MethodSpec(
+        name="cs_emb", algorithm_family="cs", representation="emb", fn=fast_cs_emb
+    ),
+    # MethodSpec(
+    #     name="pp_tf_srp", algorithm_family="pp", representation="tf_srp", fn=fast_pp
+    # ),
+    MethodSpec(
+        name="pp_emb", algorithm_family="pp", representation="emb", fn=fast_pp_emb
+    ),
+]
+
+
+# -----------------------------
+# Deterministic seeding (do NOT use Python's hash(); it varies per process unless PYTHONHASHSEED is fixed)
+# -----------------------------
+
+
+def stable_u32_seed(*parts: str, namespace: str = "tsr-exp-v1") -> int:
+    """Create a deterministic 32-bit seed from string parts."""
+    h = hashlib.blake2b(digest_size=8, person=namespace.encode("utf-8"))
+    for p in parts:
+        h.update(p.encode("utf-8"))
+        h.update(b"\0")
+    return int.from_bytes(h.digest()[:4], "little", signed=False)
+
+
+# -----------------------------
+# Budgeting
+# -----------------------------
+
+
+def num_test_cases_from_budget(test_suite: TestSuite, budget_prop: float) -> int:
+    """Compute exact number of tests to select at a proportional budget."""
+    n_total = len(test_suite.test_cases)
+    return max(1, ceil(n_total * float(budget_prop)))
+
+
+def achieved_budget_ratio(test_suite: TestSuite, n_selected: int) -> float:
+    return float(n_selected) / float(len(test_suite.test_cases))
+
+
+# -----------------------------
+# Suite metadata
+# -----------------------------
+
+
+def infer_language(program: str, version: str) -> str:
+    """Optional helper: label language (Java/C) for analysis.
+
+    Adjust mapping to your suite naming conventions.
     """
-    N = max(1, ceil(len(test_suite.test_cases) * budget))
+    if (program.lower(), version.lower()) in D4J:
+        return "Java"
+    return "C"  # default fallback
 
-    return N
+
+# -----------------------------
+# Core runner (paired design)
+# -----------------------------
 
 
-def run_single_budget_experiment(
-    algo: ReductionAlgorithm,
-    test_suite: TestSuite,
-    budget: float,
-    random_seed: int,
+def run_experiments(
+    suites: Sequence[Tuple[str, str]],
+    methods: Sequence[MethodSpec],
+    budgets: Sequence[float],
+    runs: int,
+    base_seed: int = 20260108,
 ) -> pd.DataFrame:
+    """Runs a fully paired experiment.
+
+    For each (suite, run_id), a single seed is generated and used for all methods and budgets.
     """
-    Args:
-        algo (ReductionAlgorithm): The reduction algorithm to use.
-        test_suite (TestSuite): The test suite to run the experiment on.
-        budget (float): Proportion of test_suite to reduce to.
-        random_seed (int): Random seed to pass to the reduction algorithm for reproducibility
-
-    Returns:
-        pd.DataFrame: The results of the experiment run (1 row)
-    """
-    N = num_test_cases_from_budget(test_suite, budget)
-
-    reduction_result = algo(
-        test_suite, dimensions=0, budget=N, random_seed=random_seed, verbose=False
-    )
-    row = compute_metrics(test_suite, reduction_result)
-
-    return pd.DataFrame(row)
-
-
-def run_multiple_budget_experiments(
-    algos: Sequence[ReductionAlgorithm],
-    test_suites: Sequence[TestSuite],
-    test_suite_names: Sequence[str],
-    budgets: Sequence[float],
-    iteration: int,
-):
-    results = []
-    for test_suite_name, test_suite in zip(test_suite_names, test_suites):
-        random_seed = hash(f"{test_suite_name}-{iteration}") % 2**32
-        for algo in algos:
-            for budget in budgets:
-                result = run_single_budget_experiment(
-                    algo=algo,
-                    test_suite=test_suite,
-                    budget=budget,
-                    random_seed=random_seed,
-                )
-                result["budget"] = budget
-                result["algo"] = algo.__class__
-                results.append(result)
-
-    return pd.concat(results)
-
-
-def run_experiments_tqdm(
-    suites: Sequence[Tuple[str, str]],
-    algos: Sequence[ReductionAlgorithm],
-    budgets: Sequence[float],
-    runs: int = 1,
-):
-    results = []
-    pbar = tqdm(
-        total=len(suites) * runs * len(algos) * len(budgets), position=0, leave=True
-    )
-
-    for program, version in tqdm(suites, desc="Test suites", position=1, leave=False):
-        test_suite = load_test_suite(program, version)
-        Ns = [num_test_cases_from_budget(test_suite, budget) for budget in budgets]
-
-        for run in tqdm(range(runs), desc="Runs", position=2, leave=False):
-            random_seed = abs(hash(f"{program}_{version}-{run}")) % (2**32)
-
-            for algo in tqdm(algos, desc="Algos", position=3, leave=False):
-                for N in tqdm(Ns, desc="Budgets (N)", position=4, leave=False):
-                    reduction_result = algo(
-                        test_suite,
-                        dimensions=0,
-                        budget=N,
-                        random_seed=random_seed,
-                    )
-
-                    test = 1 / 0
-
-                    result = compute_metrics(test_suite, reduction_result)
-                    result["test_cases_selected"] = N
-                    result["algo"] = algo.__qualname__
-                    result["test_suite"] = f"{program}_{version}"
-                    result["random_seed"] = random_seed
-
-                    results.append(result)
-                    pbar.update(1)
-
-    return pd.concat(results).reset_index(drop=True)
-
-
-def run_experiments_rich(
-    suites: Sequence[Tuple[str, str]],
-    algos: Sequence[ReductionAlgorithm],
-    budgets: Sequence[float],
-    runs: int = 1,
-):
     console = Console()
     results = []
+
+    budgets = [float(b) for b in budgets]
+    if any(b <= 0 for b in budgets):
+        raise ValueError("All budgets must be > 0.")
+
+    budgets = sorted(set(budgets))
 
     progress = Progress(
         TextColumn("[bold]{task.description}"),
@@ -152,87 +140,203 @@ def run_experiments_rich(
         TimeElapsedColumn(),
         TimeRemainingColumn(),
         console=console,
-        transient=False,  # keep final bars; set True to clear on finish
+        transient=False,
     )
 
+    total = len(suites) * runs * len(methods) * len(budgets)
     with progress:
-        overall_task = progress.add_task(
-            "Overall experiment", total=len(suites) * runs * len(algos) * len(budgets)
-        )
-        test_suite_task = progress.add_task("Test Suite", total=len(suites))
-        runs_task = progress.add_task("Runs (current test suite)", total=runs)
-        algos_task = progress.add_task("Algos (current run)", total=len(algos))
-        ns_task = progress.add_task("Budgets (current algo)", total=len(budgets))
+        overall_task = progress.add_task("Overall", total=total)
 
         for program, version in suites:
-            progress.reset(runs_task, total=runs, completed=0)
-            progress.update(
-                test_suite_task, description=f"Test suite (suite={program}_{version})"
-            )
+            suite_id = f"{program}_{version}"
+            language = infer_language(program, version)
 
             test_suite = load_test_suite(program, version)
-            Ns = [num_test_cases_from_budget(test_suite, budget) for budget in budgets]
+            n_total = len(test_suite.test_cases)
 
-            for run in range(runs):
-                random_seed = abs(hash(f"{program}_{version}-{run}")) % (2**32)
+            for run_id in range(runs):
+                seed = stable_u32_seed(str(base_seed), suite_id, str(run_id))
 
-                progress.reset(algos_task, total=len(algos), completed=0)
-                progress.update(runs_task, description=f"Runs (run={run})")
+                for m in methods:
+                    for budget_prop in budgets:
+                        n_selected = num_test_cases_from_budget(test_suite, budget_prop)
 
-                for algo in algos:
-                    progress.reset(ns_task, total=len(Ns), completed=0)
-                    progress.update(
-                        algos_task,
-                        advance=1,
-                        description=f"Algos (run={run}, algo={algo.__qualname__})",
-                    )
-
-                    for N in Ns:
-                        progress.update(
-                            ns_task,
-                            advance=1,
-                            description=f"Budgets (N={N})",
-                        )
-
-                        reduction_result = algo(
+                        reduction_result = m.fn(
                             test_suite,
                             dimensions=0,
-                            budget=N,
-                            random_seed=random_seed,
+                            budget=n_selected,
+                            random_seed=seed,
+                            verbose=False,
                         )
 
-                        result = compute_metrics(test_suite, reduction_result)
+                        row = compute_metrics(test_suite, reduction_result)
 
-                        result["test_cases_selected"] = N
-                        result["algo"] = algo.__qualname__
-                        result["test_suite"] = f"{program}_{version}"
-                        result["random_seed"] = random_seed
+                        row.update(
+                            {
+                                "timestamp_utc": datetime.now().isoformat(
+                                    timespec="seconds"
+                                ),
+                                "test_suite": suite_id,
+                                "program": program,
+                                "version": version,
+                                "language": language,
+                                "n_total_tests": n_total,
+                                "budget_prop_requested": float(budget_prop),
+                                "n_selected": int(n_selected),
+                                "budget_prop_achieved": achieved_budget_ratio(
+                                    test_suite, n_selected
+                                ),
+                                "run_id": int(run_id),
+                                "random_seed": int(seed),
+                                "method": m.name,
+                                "algorithm_family": m.algorithm_family,
+                                "representation": m.representation,
+                            }
+                        )
 
-                        results.append(result)
+                        results.append(row)
                         progress.update(overall_task, advance=1)
 
-                progress.update(runs_task, advance=1)
-            progress.update(test_suite_task, advance=1)
-    return pd.concat(results).reset_index(drop=True)
+    return pd.DataFrame(results)
 
 
-def main():
-    test_suites = SIR + D4J
-    print(test_suites)
-    algos = [fast_cs, fast_cs_emb, fast_pp, fast_pp_emb]
-    budgets = np.concat(
+def run_experiments_tqdm(
+    suites: Sequence[Tuple[str, str]],
+    methods: Sequence[MethodSpec],
+    budgets: Sequence[float],
+    runs: int,
+    base_seed: int = 20260108,
+) -> pd.DataFrame:
+    """Runs a fully paired experiment.
+
+    For each (suite, run_id), a single seed is generated and used for all methods and budgets.
+    """
+    results = []
+
+    budgets = [float(b) for b in budgets]
+    if any(b <= 0 for b in budgets):
+        raise ValueError("All budgets must be > 0.")
+
+    budgets = sorted(set(budgets))
+
+    total = len(suites) * runs * len(methods) * len(budgets)
+
+    with tqdm(
+        total=total, desc="Overall", unit="run", dynamic_ncols=True, smoothing=0.05
+    ) as pbar:
+        for program, version in suites:
+            suite_id = f"{program}_{version}"
+            language = infer_language(program, version)
+
+            test_suite = load_test_suite(program, version)
+            n_total = len(test_suite.test_cases)
+
+            for run_id in range(runs):
+                seed = stable_u32_seed(str(base_seed), suite_id, str(run_id))
+
+                for m in methods:
+                    for budget_prop in budgets:
+                        n_selected = num_test_cases_from_budget(test_suite, budget_prop)
+
+                        reduction_result = m.fn(
+                            test_suite,
+                            dimensions=0,
+                            budget=n_selected,
+                            random_seed=seed,
+                            verbose=False,
+                        )
+
+                        row = compute_metrics(test_suite, reduction_result)
+
+                        row.update(
+                            {
+                                "timestamp_utc": datetime.now().isoformat(
+                                    timespec="seconds"
+                                ),
+                                "test_suite": suite_id,
+                                "program": program,
+                                "version": version,
+                                "language": language,
+                                "n_total_tests": n_total,
+                                "budget_prop_requested": float(budget_prop),
+                                "n_selected": int(n_selected),
+                                "budget_prop_achieved": achieved_budget_ratio(
+                                    test_suite, n_selected
+                                ),
+                                "run_id": int(run_id),
+                                "random_seed": int(seed),
+                                "method": m.name,
+                                "algorithm_family": m.algorithm_family,
+                                "representation": m.representation,
+                            }
+                        )
+
+                        results.append(row)
+                        pbar.set_description(f"Processing {m.name} ({run_id})")
+                        pbar.update(1)
+
+    return pd.DataFrame(results)
+
+
+def build_default_budgets() -> List[float]:
+    budgets = np.concatenate(
         [
-            np.arange(0.01, 0.26, 0.01),
-            np.arange(0.3, 0.5, 0.05),
-            np.arange(0.5, 1.1, 0.25),
+            np.arange(0.05, 0.26, 0.05),
+            np.arange(0.30, 0.51, 0.1),
+            np.arange(0.60, 1.01, 0.2),
         ]
-    ).tolist()
-    runs = 40
+    )
+    return [float(f"{b:.4f}") for b in budgets.tolist()]
 
-    results = run_experiments_rich(test_suites, algos, budgets, runs)
 
-    print(results)
-    results.to_csv(f"data/results-{datetime.today().strftime('%Y-%m-%d-%H%M%S')}.csv")
+def methods_to_metadata(methods: Sequence[MethodSpec]) -> list[dict]:
+    return [
+        {
+            "name": m.name,
+            "algorithm_family": m.algorithm_family,
+            "representation": m.representation,
+        }
+        for m in methods
+    ]
+
+
+def write_run_metadata(out_dir: Path, **kwargs) -> None:
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    meta = {
+        "created_utc": datetime.now().isoformat(timespec="seconds"),
+        "python": platform.python_version(),
+        "platform": platform.platform(),
+        "cwd": os.getcwd(),
+        **kwargs,
+    }
+
+    (out_dir / "run-metadata.json").write_text(
+        json.dumps(meta, indent=2), encoding="utf-8"
+    )
+
+
+def main() -> None:
+    suites = D4J + SIR
+    budgets = build_default_budgets()
+    runs = 50
+
+    out_dir = Path("data") / f"results-{datetime.today().strftime('%Y-%m-%d-%H%M%S')}"
+    write_run_metadata(
+        out_dir,
+        suites=suites,
+        budgets=budgets,
+        runs=runs,
+        methods=methods_to_metadata(METHODS),
+        base_seed=20260108,
+    )
+
+    df = run_experiments_tqdm(
+        suites=suites, methods=METHODS, budgets=budgets, runs=runs, base_seed=20260108
+    )
+    df.to_csv(out_dir / "results.csv", index=False)
+    print(df.head())
+    print(f"Wrote: {out_dir / 'results.csv'}")
 
 
 if __name__ == "__main__":

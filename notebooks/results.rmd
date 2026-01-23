@@ -1,0 +1,431 @@
+---
+title: "Fault Detection Modeling"
+author: Alexander Nielsen
+date: January 23, 2026
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  message = FALSE,
+  warning = FALSE
+)
+```
+
+## Packages
+
+```{r packages}
+pkgs <- c(
+  "tidyverse",
+  "lme4",
+  "splines",
+  "readr",
+  "broom.mixed",
+  "sjPlot",
+  "emmeans",
+  "ggplot2"
+)
+
+to_install <- pkgs[!pkgs %in% rownames(installed.packages())]
+if (length(to_install) > 0) install.packages(to_install)
+
+invisible(lapply(pkgs, library, character.only = TRUE))
+```
+
+## Load data
+
+```{r data-load}
+csv_path <- "../data/results-2026-01-17-165719/results.csv"
+
+d_raw <- readr::read_csv(csv_path, show_col_types = FALSE)
+d_raw
+```
+
+## Prepare data
+
+```{r data-prep}
+eps <- 1e-6
+
+df <- d_raw %>%
+  mutate(
+    # Ensure types
+    total_faults    = as.integer(total_faults),
+    faults_detected = as.integer(faults_detected),
+    n_total_tests   = as.integer(n_total_tests),
+
+    # Derived columns
+    failures = as.integer(total_faults - faults_detected),
+    budget   = as.numeric(budget_prop_achieved),
+
+    # Logit transform of budget (bounded away from 0/1)
+    p              = pmin(pmax(budget, eps), 1 - eps),
+    budget_logit   = as.numeric(qlogis(p)),
+
+    # Factors
+    program          = factor(program),
+    language         = relevel(factor(language), ref = "C"),
+    algorithm_family = relevel(factor(algorithm_family), ref = "cs"),
+    representation   = relevel(factor(representation), ref = "tf_srp"),
+
+    # Paired-trial identifier: all methods share same (language, random_seed)
+    trial_id = interaction(language, random_seed, drop = TRUE)
+  ) %>%
+  filter(
+    !is.na(total_faults),
+    !is.na(faults_detected),
+    total_faults >= 0,
+    faults_detected >= 0,
+    faults_detected <= total_faults,
+    representation != "SuiteLength"
+  )
+
+df
+```
+
+## Models
+
+### No interaction model
+
+Hypothesis: Budget effect is non-linear
+
+```{r budget-linear}
+budget_linear <- glmer(
+  cbind(faults_detected, failures) ~
+    algorithm_family + representation + budget + language +
+    (1 | test_suite) +
+    (1 | run_id),
+  family = binomial,
+  data = df
+)
+```
+
+```{r budget-quad}
+budget_quad <- glmer(
+  cbind(faults_detected, failures) ~
+    algorithm_family + representation + (budget + I(budget^2)) + language +
+    (1 | test_suite) +
+    (1 | run_id),
+  family = binomial,
+  data = df
+)
+```
+
+```{r budget-logit}
+budget_logit <- glmer(
+  cbind(faults_detected, failures) ~
+    algorithm_family + representation + budget_logit + language +
+    (1 | test_suite) +
+    (1 | run_id),
+  family = binomial,
+  data = df
+)
+```
+
+```{r budget-spline}
+budget_spline <- glmer(
+  cbind(faults_detected, failures) ~
+    algorithm_family + representation + ns(budget, df=3) + language +
+    (1 | test_suite) +
+    (1 | run_id),
+  family = binomial,
+  data = df
+)
+```
+
+
+#### Test of budget linear vs non-linear
+
+```{r anova-budget}
+anova(budget_linear, budget_quad, budget_logit, budget_spline, test = "Chisq")
+AIC(budget_linear, budget_quad, budget_logit, budget_spline)
+BIC(budget_linear, budget_quad, budget_logit, budget_spline)
+```
+
+Using splines to model budget effect is statistically significantly better than other models, but since the logit budget
+model is not a nested model, we can not perform a likelihood ratio test. However, the AIC and BIC values indicate that
+the logit budget model is a better fit with less complexity and therefore is preferred.
+
+
+### Interaction models
+
+```{r interaction-none}
+interaction_none <- glmer(
+  cbind(faults_detected, failures) ~
+    algorithm_family + representation + budget_logit + language +
+    (1 | test_suite) +
+    (1 | run_id),
+  family = binomial,
+  data = df
+)
+```
+
+```{r interaction-2-way}
+interaction_2_way_language <- glmer(
+  cbind(faults_detected, failures) ~
+    (algorithm_family + representation + budget_logit + language)^2 +
+    (1 | test_suite) +
+    (1 | run_id),
+  family = binomial,
+  data = df
+)
+```
+
+```{r interaction-2-way-no-language}
+interaction_2_way_no_language <- glmer(
+  cbind(faults_detected, failures) ~
+    (algorithm_family + representation + budget_logit)^2 +
+    language +
+    (1 | test_suite) +
+    (1 | run_id),
+  family = binomial,
+  data = df
+)
+```
+
+```{r interaction-3-way}
+interaction_3_way <- glmer(
+  cbind(faults_detected, failures) ~
+    (algorithm_family + representation + budget_logit + language)^3 +
+    (1 | test_suite) +
+    (1 | run_id),
+  family = binomial,
+  data = df
+)
+```
+
+```{r interaction-4-way}
+interaction_4_way <- glmer(
+  cbind(faults_detected, failures) ~
+    (algorithm_family + representation + budget_logit + language)^4 +
+    (1 | test_suite) +
+    (1 | run_id),
+  family = binomial,
+  data = df
+)
+```
+
+```{r interaction-anova}
+anova(
+  interaction_none,
+  interaction_2_way_no_language,
+  interaction_2_way_language,
+  interaction_3_way,
+  interaction_4_way,
+  test = "Chisq"
+)
+```
+
+
+Based on the likelihood ratio tests, it seems that language plays a very significant role in the interactions. Therefore,
+we will stratify the data by language and fit separate models for each language.
+
+### Language-stratified models
+```{r stratified-data}
+df_C <- subset(df, language == "C")
+mean_budget_logit_C <- mean(df_C$budget_logit)
+df_C$budget_logit_c <- df_C$budget_logit - mean_budget_logit_C
+plogis(mean_budget_logit_C)
+
+df_Java <- subset(df, language == "Java")
+mean_budget_logit_Java <- mean(df_Java$budget_logit)
+df_Java$budget_logit_c <- df_Java$budget_logit - mean_budget_logit_Java
+plogis(mean_budget_logit_Java)
+```
+
+```{r model-C}
+model_C_1 <- glmer(
+  cbind(faults_detected, failures) ~
+    (algorithm_family + representation + budget_logit_c) +
+    (1 | test_suite) +
+    (1 | run_id),
+  family = binomial,
+  data = df_C
+)
+
+model_C_2 <- glmer(
+  cbind(faults_detected, failures) ~
+    (algorithm_family + representation + budget_logit_c)^2 +
+    (1 | test_suite) +
+    (1 | run_id),
+  family = binomial,
+  data = df_C
+)
+
+model_C_3 <- glmer(
+  cbind(faults_detected, failures) ~
+    (algorithm_family + representation + budget_logit_c)^3 +
+    (1 | test_suite) +
+    (1 | run_id),
+  family = binomial,
+  data = df_C
+)
+```
+
+```{r anova-C}
+anova(model_C_1, model_C_2, model_C_3, test = "Chisq")
+```
+
+The 2-way interaction model is preferred for the C datasets.
+
+
+```{r model-Java}
+model_Java_1 <- glmer(
+  cbind(faults_detected, failures) ~
+    (algorithm_family + representation + budget_logit_c) +
+    (1 | test_suite) +
+    (1 | run_id),
+  family = binomial,
+  data = df_Java
+)
+
+model_Java_2 <- glmer(
+  cbind(faults_detected, failures) ~
+    (algorithm_family + representation + budget_logit_c)^2 +
+    (1 | test_suite) +
+    (1 | run_id),
+  family = binomial,
+  data = df_Java
+)
+
+model_Java_3 <- glmer(
+  cbind(faults_detected, failures) ~
+    (algorithm_family + representation + budget_logit_c)^3 +
+    (1 | test_suite) +
+    (1 | run_id),
+  family = binomial,
+  data = df_Java
+)
+```
+
+```{r anova-Java}
+anova(model_Java_1, model_Java_2, model_Java_3, test = "Chisq")
+```
+
+3-way interaction model is preferred for the Java datasets.
+
+### Final models
+
+```{r final-model-C}
+final_model_C <- glmer(
+  cbind(faults_detected, failures) ~
+    (representation + algorithm_family + budget_logit_c)^2 +
+    (1 | test_suite) +
+    (1 | run_id),
+  family = binomial,
+  data = df_C
+)
+```
+
+```{r final-model-Java}
+final_model_Java <- glmer(
+  cbind(faults_detected, failures) ~
+    (representation + algorithm_family + budget_logit_c)^3 +
+    (1 | test_suite) +
+    (1 | run_id),
+  family = binomial,
+  data = df_Java
+)
+```
+
+
+## Model summaries
+
+```{r model-summaries}
+summary(final_model_C)
+summary(final_model_Java)
+```
+
+
+## Tables
+
+```{r model-tables-sjplot}
+sjPlot::tab_model(
+  final_model_C,
+  final_model_Java,
+  transform = "exp",
+  show.ci = TRUE,
+  show.se = TRUE
+)
+```
+
+```{r tidy-C}
+tidy(final_model_C, effects = "fixed", exponentiate = TRUE, conf.int = TRUE)
+```
+
+
+```{r tidy-Java}
+tidy(final_model_Java, effects = "fixed", exponentiate = TRUE, conf.int = TRUE)
+```
+
+
+## Visualizations
+
+```{r emm-plot-C}
+p <- emmip(final_model_C,
+           representation ~ budget_logit_c | algorithm_family,
+           at = list(budget_logit_c = seq(-2, 2, length.out = 100)),
+           type = "response",
+           CIs = TRUE)
+
+ggsave("emmip_C.png", p, width = 7, height = 4, dpi = 300)
+ggsave("emmip_C.pdf", p, width = 7, height = 4)
+p
+```
+
+```{r save-emm-C}
+emm_C <- emmeans(
+  final_model_C,
+  ~ representation * algorithm_family | budget_logit_c,
+  at = list(budget_logit_c = c(-1, 0, 1)),
+  type = "response"
+)
+
+plot(emm_C)
+```
+
+```{r emm-plot-Java}
+p <- emmip(final_model_Java,
+           representation ~ budget_logit_c | algorithm_family,
+           at = list(budget_logit_c = seq(-2, 2, length.out = 100)),
+           type = "response",
+           CIs = TRUE)
+
+ggsave("emmip_Java.png", p, width = 7, height = 4, dpi = 300)
+ggsave("emmip_Java.pdf", p, width = 7, height = 4)
+p
+
+```
+
+```{r emm-Java}
+emm_Java <- emmeans(
+  final_model_Java,
+  ~ representation * algorithm_family | budget_logit_c,
+  at = list(budget_logit_c = c(-1, 0, 1)),
+  type = "response"
+)
+
+plot(emm_Java)
+```
+
+```{r emm-C-contrast}
+contrast(
+  emmeans(final_model_C,
+          ~ representation * algorithm_family,
+          at = list(budget_logit_c = 0)),
+  method = "pairwise",
+  by = "algorithm_family",
+  type = "response"
+)
+```
+
+```{r emm-Java-contrast}
+contrast(
+  emmeans(final_model_Java,
+          ~ representation * algorithm_family,
+          at = list(budget_logit_c = 0)),
+  method = "pairwise",
+  by = c("algorithm_family", "language"),
+  type = "response"
+)
+```

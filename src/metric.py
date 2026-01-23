@@ -1,6 +1,5 @@
-from typing import Dict
+from typing import Tuple
 from utils import ReductionResult, TestSuite
-import pandas as pd
 
 
 # First Faulty Test (FFT)
@@ -27,7 +26,9 @@ def tsr(test_suite: TestSuite, reduction_result: ReductionResult) -> float:
 
 
 # Fault Detection Loss (FDL)
-def fdl(test_suite: TestSuite, reduction_result: ReductionResult) -> float:
+def fdl(
+    test_suite: TestSuite, reduction_result: ReductionResult
+) -> Tuple[int, int, float]:
     """
     Fault Detection Loss (FDL): Loss of fault detected by the reduced test suite
     """
@@ -42,7 +43,11 @@ def fdl(test_suite: TestSuite, reduction_result: ReductionResult) -> float:
         if test_case_idx in selected_idx:
             detected_faults.update(faults)
 
-    return (len(total_faults) - len(detected_faults)) / len(total_faults)
+    return (
+        len(total_faults),
+        len(detected_faults),
+        (len(total_faults) - len(detected_faults)) / len(total_faults),
+    )
 
 
 def apfd(test_suite: TestSuite, reduction_result: ReductionResult) -> float:
@@ -64,17 +69,15 @@ def apfd(test_suite: TestSuite, reduction_result: ReductionResult) -> float:
     return apfd
 
 
-def compute_metrics(
-    test_suite: TestSuite, reduction_result: ReductionResult
-) -> pd.DataFrame:
-    return pd.DataFrame(
-        {
-            "preperation_time_ns": reduction_result.prep_time_ns,
-            "reduction_time_ns": reduction_result.red_time_ns,
-            "fft": fft(test_suite, reduction_result),
-            "tsr": tsr(test_suite, reduction_result),
-            "fdl": fdl(test_suite, reduction_result),
-            "apfd": apfd(test_suite, reduction_result),
-        },
-        index=pd.Series([0]),
-    )
+def compute_metrics(test_suite: TestSuite, reduction_result: ReductionResult) -> dict:
+    total_faults, faults_detected, fdl_ = fdl(test_suite, reduction_result)
+    return {
+        "total_faults": total_faults,
+        "faults_detected": faults_detected,
+        "preperation_time_ns": reduction_result.prep_time_ns,
+        "reduction_time_ns": reduction_result.red_time_ns,
+        "fft": fft(test_suite, reduction_result),
+        "tsr": tsr(test_suite, reduction_result),
+        "fdl": fdl_,
+        "apfd": apfd(test_suite, reduction_result),
+    }
