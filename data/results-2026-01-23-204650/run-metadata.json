@@ -1,0 +1,84 @@
+{
+  "created_utc": "2026-01-23T20:46:50",
+  "python": "3.13.11",
+  "platform": "Linux-6.8.0-90-generic-x86_64-with-glibc2.39",
+  "cwd": "/home/ucloud/fast-r-emb",
+  "suites": [
+    [
+      "math",
+      "v1"
+    ],
+    [
+      "closure",
+      "v1"
+    ],
+    [
+      "time",
+      "v1"
+    ],
+    [
+      "lang",
+      "v1"
+    ],
+    [
+      "chart",
+      "v1"
+    ],
+    [
+      "flex",
+      "v3"
+    ],
+    [
+      "grep",
+      "v3"
+    ],
+    [
+      "gzip",
+      "v1"
+    ],
+    [
+      "sed",
+      "v6"
+    ],
+    [
+      "make",
+      "v1"
+    ]
+  ],
+  "budgets": [
+    0.1,
+    0.2,
+    0.3,
+    0.4,
+    0.5,
+    0.6,
+    0.7,
+    0.8,
+    0.9,
+    1.0
+  ],
+  "runs": 10,
+  "methods": [
+    {
+      "name": "cs_tf_srp",
+      "algorithm_family": "cs",
+      "representation": "tf_srp"
+    },
+    {
+      "name": "cs_emb",
+      "algorithm_family": "cs",
+      "representation": "emb"
+    },
+    {
+      "name": "pp_tf_srp",
+      "algorithm_family": "pp",
+      "representation": "tf_srp"
+    },
+    {
+      "name": "pp_emb",
+      "algorithm_family": "pp",
+      "representation": "emb"
+    }
+  ],
+  "base_seed": 20260108
+}
