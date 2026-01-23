@@ -22,7 +22,7 @@ from rich.progress import (
     TimeElapsedColumn,
     TimeRemainingColumn,
 )
-from fastr import fast_cs_emb, fast_pp_emb
+from fastr import fast_cs_emb, fast_pp_emb, fast_cs, fast_pp, random_baseline
 from metric import compute_metrics
 from utils import D4J, SIR, ReductionAlgorithm, TestSuite, load_test_suite
 
@@ -43,21 +43,21 @@ class MethodSpec:
 
 
 METHODS: List[MethodSpec] = [
-    # MethodSpec(
-    #     name="random_baseline",
-    #     algorithm_family="random",
-    #     representation="SuiteLength",
-    #     fn=random_baseline,
-    # ),
-    # MethodSpec(
-    #     name="cs_tf_srp", algorithm_family="cs", representation="tf_srp", fn=fast_cs
-    # ),
+    MethodSpec(
+        name="random_baseline",
+        algorithm_family="random",
+        representation="SuiteLength",
+        fn=random_baseline,
+    ),
+    MethodSpec(
+        name="cs_tf_srp", algorithm_family="cs", representation="tf_srp", fn=fast_cs
+    ),
     MethodSpec(
         name="cs_emb", algorithm_family="cs", representation="emb", fn=fast_cs_emb
     ),
-    # MethodSpec(
-    #     name="pp_tf_srp", algorithm_family="pp", representation="tf_srp", fn=fast_pp
-    # ),
+    MethodSpec(
+        name="pp_tf_srp", algorithm_family="pp", representation="tf_srp", fn=fast_pp
+    ),
     MethodSpec(
         name="pp_emb", algorithm_family="pp", representation="emb", fn=fast_pp_emb
     ),
@@ -281,9 +281,7 @@ def run_experiments_tqdm(
 def build_default_budgets() -> List[float]:
     budgets = np.concatenate(
         [
-            np.arange(0.05, 0.26, 0.05),
-            np.arange(0.30, 0.51, 0.1),
-            np.arange(0.60, 1.01, 0.2),
+            np.arange(0.05, 0.96, 0.05),
         ]
     )
     return [float(f"{b:.4f}") for b in budgets.tolist()]
