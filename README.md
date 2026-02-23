@@ -16,7 +16,7 @@ Large regression test suites impose substantial computational costs, motivating 
 - [presentation_examples/](presentation_examples/): Sripts to generate examples for presentation
 
 
-## Running the experiments
+## Running the Experiments
 
 The environment to run the experiments and analysis is managed by [uv](https://docs.astral.sh/uv/getting-started/). Below is guide to running the experiments using uv:
 
@@ -56,3 +56,27 @@ uv run running_time
 ```
 
 This also generates a csv with the results of the experiment, to be used for later analysis. This follows the exact same naming convention as the budget results explained above. The running time experiment run used for the paper can for example be found at [this location](data/results-2026-01-23-204650/)
+
+
+## Running the Analysis
+
+
+### Budget Experiment
+
+The analysis of the budget experiment can be run using the following command:
+
+```bash
+uv run scripts/analysis.py
+```
+
+This will generate most of the figures used in the paper, as well as output the results to the console
+
+The results of the GLMM analysis can be found in [results.pdf](notebooks/results.pdf)
+
+
+### Running time experiment
+
+The analysis of this experiment can be found in [notebooks/results_running_time.ipynb](notebooks/results_running_time.ipynb).
+
+This notebook generates the figures used for this
+
