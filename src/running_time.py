@@ -22,7 +22,7 @@ from rich.progress import (
     TimeElapsedColumn,
     TimeRemainingColumn,
 )
-from fastr import fast_cs_emb, fast_pp_emb, fast_cs, fast_pp, random_baseline
+from fastr import fast_cs_emb, fast_pp_emb, fast_cs, fast_pp
 from metric import compute_metrics
 from utils import D4J, SIR, ReductionAlgorithm, TestSuite, load_test_suite
 
@@ -43,12 +43,6 @@ class MethodSpec:
 
 
 METHODS: List[MethodSpec] = [
-    # MethodSpec(
-    #     name="random_baseline",
-    #     algorithm_family="random",
-    #     representation="SuiteLength",
-    #     fn=random_baseline,
-    # ),
     MethodSpec(
         name="cs_tf_srp", algorithm_family="cs", representation="tf_srp", fn=fast_cs
     ),
@@ -167,6 +161,7 @@ def run_experiments(
                             budget=n_selected,
                             random_seed=seed,
                             verbose=False,
+                            cache=False,
                         )
 
                         row = compute_metrics(test_suite, reduction_result)
@@ -244,6 +239,7 @@ def run_experiments_tqdm(
                             budget=n_selected,
                             random_seed=seed,
                             verbose=False,
+                            cache=False,
                         )
 
                         row = compute_metrics(test_suite, reduction_result)

@@ -61,6 +61,7 @@ class ReductionAlgorithm(Protocol):
         budget: int = 0,
         random_seed: int = 42,
         verbose: bool = False,
+        cache: bool = False,
     ) -> ReductionResult: ...
 
 

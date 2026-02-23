@@ -109,7 +109,7 @@ def infer_language(program: str, version: str) -> str:
 
 
 # -----------------------------
-# Core runner (paired design)
+# Paired design runner
 # -----------------------------
 
 
@@ -167,6 +167,7 @@ def run_experiments(
                             budget=n_selected,
                             random_seed=seed,
                             verbose=False,
+                            cache=True,
                         )
 
                         row = compute_metrics(test_suite, reduction_result)
@@ -244,6 +245,7 @@ def run_experiments_tqdm(
                             budget=n_selected,
                             random_seed=seed,
                             verbose=False,
+                            cache=True,
                         )
 
                         row = compute_metrics(test_suite, reduction_result)

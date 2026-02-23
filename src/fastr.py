@@ -15,52 +15,15 @@ from sklearn.random_projection import (
     johnson_lindenstrauss_min_dim,
 )
 
-from embedding.codeT5 import CodeT5PlusEmbedder
-from hashing import min_hashing
+from embedding.codeT5 import CodeT5PlusEmbedder, CodeT5PlusEmbedderCache
 from metric import compute_metrics
 from utils import ReductionResult, TestSuite, load_test_suite, set_all_random_seeds
 
 embedder = CodeT5PlusEmbedder()
+embedder_cache = CodeT5PlusEmbedderCache()
 
 
 # --------------------  UTILS  --------------------
-
-
-def generate_signature(
-    test_suite: TestSuite, dims: int = 10, k: int = 5
-) -> List[List[str]]:
-    shingles = test_suite.coverage_ids or []
-
-    # Generate k-shingles when no coverage_ids are given
-    if shingles == []:
-        shingle = set()
-        for test_case in test_suite.test_cases:
-            for i in range(len(test_case) - k + 1):
-                shingle.add(hash(test_case[i : i + k]))
-        shingles.append(shingle)
-
-    signatures = [min_hashing(shingle, dims) for shingle in shingles]
-
-    return signatures
-
-
-def store_signatures(signatures: List[List[str]], outfile: Path) -> None:
-    with open(outfile, "w") as f:
-        for signature in signatures:
-            for _hash in signature:
-                f.write(_hash)
-                f.write(" ")
-            f.write("\n")
-
-
-def load_signatures(input_file: Path) -> List[List[str]]:
-    signatures = []
-
-    with open(input_file, "r") as fin:
-        for tc in fin:
-            signatures.append(tc.strip().split())
-
-    return signatures
 
 
 def compute_distance(
@@ -81,7 +44,7 @@ def ns_to_sec(ns: float) -> float:
 
 
 def preparation_FAST_R(
-    test_suite: TestSuite, dimensions: int = 0, seed: int = 0
+    test_suite: TestSuite, dimensions: int = 0, seed: int = 0, cache: bool = False
 ) -> torch.Tensor:
     vectorizer = HashingVectorizer()  # compute "TF"
     test_cases = vectorizer.fit_transform(test_suite.test_cases)
@@ -99,9 +62,16 @@ def preparation_FAST_R(
 
 
 def preparation_codet5p(
-    test_suite: TestSuite, dimensions: int = 0, seed: int = 0
+    test_suite: TestSuite, dimensions: int = 0, seed: int = 0, cache: bool = False
 ) -> torch.Tensor:
-    return embedder.embed_test_cases(tuple(test_suite.test_cases), seed=seed)
+    if cache:
+        embeddings = embedder_cache.embed_test_cases(
+            tuple(test_suite.test_cases), seed=seed
+        )
+    else:
+        embeddings = embedder.embed_test_cases(tuple(test_suite.test_cases), seed=seed)
+
+    return F.normalize(embeddings)
 
 
 # ---------------  REDUCTION PHASE  ---------------
@@ -251,19 +221,24 @@ def preperation_reduction_algorithm(
     reduction_phase,
     algo_name: str,
     dist_metric: str = "euclidean",
-) -> Callable[[TestSuite, int, int, int, bool], ReductionResult]:
+) -> Callable[
+    [TestSuite, int, int, int, bool, bool],
+    ReductionResult,
+]:
     def algo(
         raw_test_suite: TestSuite,
         dimensions: int = 0,
         budget: int = 0,
         random_seed: int = 0,
         verbose: bool = False,
-        # cache: bool = False,
+        cache: bool = False,
     ) -> ReductionResult:
         set_all_random_seeds(random_seed)
 
         prep_start = perf_counter_ns()
-        test_suite = prep_phase(raw_test_suite, dimensions=dimensions, seed=random_seed)
+        test_suite = prep_phase(
+            raw_test_suite, dimensions=dimensions, seed=random_seed, cache=cache
+        )
         prep_end = perf_counter_ns()
         prep_time_ns = prep_end - prep_start
 
@@ -302,7 +277,7 @@ def fast_pp(
     budget: int = 0,
     random_seed: int = 0,
     verbose: bool = False,
-    # cache: bool = False,
+    cache: bool = False,
 ) -> ReductionResult:
     algo = preperation_reduction_algorithm(
         prep_phase=preparation_FAST_R,
@@ -310,7 +285,7 @@ def fast_pp(
         algo_name="FAST++",
     )
 
-    return algo(raw_test_suite, dimensions, budget, random_seed, verbose)
+    return algo(raw_test_suite, dimensions, budget, random_seed, verbose, cache)
 
 
 # Full FAST++ implementation
@@ -320,7 +295,7 @@ def fast_pp_emb(
     budget: int = 0,
     random_seed: int = 0,
     verbose: bool = False,
-    # cache: bool = False,
+    cache: bool = False,
 ) -> ReductionResult:
     algo = preperation_reduction_algorithm(
         prep_phase=preparation_codet5p,
@@ -328,7 +303,7 @@ def fast_pp_emb(
         algo_name="embedding FAST++",
     )
 
-    return algo(raw_test_suite, dimensions, budget, random_seed, verbose)
+    return algo(raw_test_suite, dimensions, budget, random_seed, verbose, cache)
 
 
 # Full FAST-CS implementation
@@ -338,13 +313,13 @@ def fast_cs(
     budget: int = 0,
     random_seed: int = 0,
     verbose: bool = False,
-    # cache: bool = False,
+    cache: bool = False,
 ) -> ReductionResult:
     algo = preperation_reduction_algorithm(
         prep_phase=preparation_FAST_R, reduction_phase=reduction_cs, algo_name="FAST-CS"
     )
 
-    return algo(raw_test_suite, dimensions, budget, random_seed, verbose)
+    return algo(raw_test_suite, dimensions, budget, random_seed, verbose, cache)
 
 
 # Full FAST-CS implementation
@@ -354,7 +329,7 @@ def fast_cs_emb(
     budget: int = 0,
     random_seed: int = 0,
     verbose: bool = False,
-    # cache: bool = False,
+    cache: bool = False,
 ) -> ReductionResult:
     algo = preperation_reduction_algorithm(
         prep_phase=preparation_codet5p,
@@ -362,7 +337,7 @@ def fast_cs_emb(
         algo_name="embedding FAST-CS",
     )
 
-    return algo(raw_test_suite, dimensions, budget, random_seed, verbose)
+    return algo(raw_test_suite, dimensions, budget, random_seed, verbose, cache)
 
 
 def random_baseline(
@@ -371,10 +346,12 @@ def random_baseline(
     budget: int = 0,
     random_seed: int = 0,
     verbose: bool = False,
-    # cache: bool = False,
+    cache: bool = False,
 ) -> ReductionResult:
     algo = preperation_reduction_algorithm(
-        prep_phase=lambda test_suite, dimensions, seed: len(test_suite.test_cases),
+        prep_phase=lambda test_suite, dimensions, seed, cache: len(
+            test_suite.test_cases
+        ),
         reduction_phase=lambda test_suite, budget, dist_metric: np.random.choice(
             np.arange(test_suite), size=budget, replace=False
         )
@@ -382,25 +359,7 @@ def random_baseline(
         algo_name="random_baseline",
     )
 
-    return algo(raw_test_suite, dimensions, budget, random_seed, verbose)
-
-
-# # FAISS implementation
-# def faiss_emb(
-#     raw_test_suite: TestSuite,
-#     dimensions: int = 0,
-#     budget: int = 0,
-#     random_seed: int = 0,
-#     verbose: bool = False,
-#     # cache: bool = False,
-# ) -> ReductionResult:
-#     algo = preperation_reduction_algorithm(
-#         prep_phase=preparation_codet5p,
-#         reduction_phase=reduction_faiss,
-#         algo_name="embedding FAISS",
-#     )
-#
-#     return algo(raw_test_suite, dimensions, budget, random_seed, verbose)
+    return algo(raw_test_suite, dimensions, budget, random_seed, verbose, cache)
 
 
 def main():
