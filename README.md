@@ -29,6 +29,7 @@ Note this runs across:
 - 50 runs
 - 5 methods (2 representations * 2 reductions + 1 baseline)
 - 19 budgets (min=0.05, max=0.95, step=0.05)
+
 = 47,500 runs
 
 ```bash
@@ -47,6 +48,7 @@ Note this runs across:
 - 10 runs
 - 4 methods (2 representations * 2 reductions)
 - 10 budgets (min=0.1, max=1.00, step=0.1)
+
 = 4,000 runs
 
 ```bash
