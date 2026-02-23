@@ -1,0 +1,28 @@
+\begin{table*}[t]
+\centering
+\begin{tabular}{p{1.2cm}p{1.2cm}p{1.2cm}p{1.2cm}p{1.2cm}p{1.2cm}p{1.2cm}p{1.2cm}p{1.2cm}p{1.2cm}p{1.2cm}p{1.2cm}p{1.2cm}}
+\hline
+\textbf{Program} & \textbf{Version} & \textbf{Dataset} & \textbf{\#T} & \textbf{\#F} & \textbf{TRF} & \textbf{T/F} & \textbf{\%TRF} & \textbf{Avg Char Len} & \textbf{Avg Word Cnt} & \textbf{Avg Tok Cnt} & \textbf{Min Tok Cnt} & \textbf{Max Tok Cnt} \\
+\hline
+chart & v1 & D4J & 356 & 1 & 1 & 1.0 & 0.3 & 6729.9 & 767.6 & 1970.0 & 645 & 12620 \\
+closure & v1 & D4J & 222 & 1 & 3 & 3.0 & 1.4 & 14435.5 & 1698.0 & 4411.0 & 238 & 101001 \\
+lang & v1 & D4J & 113 & 1 & 1 & 1.0 & 0.9 & 15825.3 & 1432.9 & 4399.3 & 277 & 29069 \\
+math & v1 & D4J & 385 & 1 & 2 & 2.0 & 0.5 & 8232.7 & 931.4 & 2687.3 & 241 & 21742 \\
+time & v1 & D4J & 123 & 1 & 1 & 1.0 & 0.8 & 20094.8 & 1725.9 & 5601.7 & 472 & 21666 \\
+flex & v3 & SIR & 670 & 9 & 332 & 36.89 & 49.6 & 86.5 & 6.7 & 53.1 & 44 & 73 \\
+grep & v3 & SIR & 809 & 8 & 720 & 90.0 & 89.0 & 40.8 & 3.6 & 23.2 & 7 & 49 \\
+gzip & v1 & SIR & 214 & 7 & 204 & 29.14 & 95.3 & 40.1 & 3.0 & 24.1 & 13 & 112 \\
+make & v1 & SIR & 875 & 19 & 432 & 22.74 & 49.4 & 169.8 & 22.1 & 94.7 & 36 & 143 \\
+sed & v6 & SIR & 370 & 6 & 166 & 27.67 & 44.9 & 81.7 & 8.4 & 43.3 & 23 & 70 \\
+\hline
+\textbf{TOTAL} & \textbf{--} & \textbf{--} & \textbf{--} & \textbf{4137} & \textbf{54} & \textbf{1862} & \textbf{34.48} & \textbf{45.0} & \textbf{--} & \textbf{--} & \textbf{--} & \textbf{--} & \textbf{--} \\
+\hline
+\end{tabular}
+\caption{Test suite Information\\
+\tiny{\#T: Number of Tests, \#F: Number of Faults, TRF: Tests Revealing Faults,\\
+T/F: Average Tests per Fault, \%TRF: Percentage Tests Revealing Faults,\\
+Avg Char Len: Average Character Length, Avg Word Cnt: Average Word Count,\\
+Avg Tok Cnt: Average Token Count, Min/Max Tok Cnt: Min/Max Token Count}}
+\footnotesize
+\label{tab:testset_info}
+\end{table*}

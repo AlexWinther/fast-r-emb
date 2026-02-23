@@ -13,29 +13,7 @@ import bambi as bmb
 import arviz as az
 
 
-DEFAULT_PATH = "data/results-2026-01-17-165719/results.csv"
-
-
-def fit_glmm(data: pd.DataFrame):
-    data = data.copy()
-
-    model = bmb.Model(
-        formula="p(faults_detected, total_faults) ~ algorithm_family * representation + budget + (1 | language) + (1 | representation)",
-        data=data,
-        family="binomial",
-    )
-
-    print(model)
-    idata = model.fit(draws=2000, tune=2000, chains=4, cores=1, target_accept=0.9)
-
-    az.plot_trace(
-        idata,
-        compact=False,
-        backend_kwargs={"layout": "constrained"},
-    )
-
-    plt.show()
-    exit()
+DEFAULT_PATH = "data/results-2026-01-23-115413/results.csv"
 
 
 def kendalls_w_from_pivot(pivot):
@@ -126,6 +104,52 @@ def plot_by_algorithm_family_and_language(
     ax[0, 1].set_title("K-means++ - C")
     ax[1, 0].set_title("Coresets - Java")
     ax[1, 1].set_title("K-means++ - Java")
+
+    plt.legend()
+    plt.tight_layout()
+
+    plt.savefig(save_path, bbox_inches="tight")
+
+
+def plot_by_algorithm_family(
+    save_path, df, agg_fn: str = "mean", include_random: bool = False
+):
+    df = df.copy()
+
+    fig, ax = plt.subplots(1, 2, figsize=(10, 4), sharex=True, sharey=True)
+
+    sns.lineplot(
+        data=df[(df["algorithm_family"] != "pp")],
+        x="budget",
+        y="fdl",
+        hue="method",
+        style="method",
+        estimator=agg_fn,
+        dashes={
+            "Random reduction": (2, 2),
+            "FAST-CS TF": (1, 0),
+            "FAST-CS EMB": (1, 0),
+        },
+        errorbar=("ci", 95),  # bootstrap CI by default
+        n_boot=1000,  # increase for smoother CI
+        ax=ax[0],
+    )
+
+    sns.lineplot(
+        data=df[(df["algorithm_family"] != "cs")],
+        x="budget",
+        y="fdl",
+        hue="method",
+        style="method",
+        estimator=agg_fn,
+        dashes={"Random reduction": (2, 2), "FAST++ TF": (1, 0), "FAST++ EMB": (1, 0)},
+        errorbar=("ci", 95),  # bootstrap CI by default
+        n_boot=1000,  # increase for smoother CI
+        ax=ax[1],
+    )
+
+    ax[0].set_title("Coresets")
+    ax[1].set_title("K-means++")
 
     plt.legend()
     plt.tight_layout()
@@ -314,6 +338,49 @@ def plot_rejection_matrix(results, language, correction_method, save_path):
     plt.show()
 
 
+def export_pvalues_latex(results_by_language: dict, save_path: str):
+    """Export a LaTeX table of the pairwise Wilcoxon p-values for the rejection matrix.
+
+    Rows: the methods (in fixed order).
+    Columns: a 2-level MultiIndex with level 0 = language, level 1 = method2.
+    For each language, and for each method2, the cell contains the p-value ( NaN if not available ).
+    """
+    methods_order = [
+        "FAST-CS TF",
+        "FAST-CS EMB",
+        "FAST++ TF",
+        "FAST++ EMB",
+        "Random reduction",
+    ]
+
+    languages = sorted(results_by_language.keys())
+    if not languages:
+        return
+
+    cols = pd.MultiIndex.from_product(
+        [languages, methods_order], names=["language", "method2"]
+    )
+    pval_table = pd.DataFrame(index=methods_order, columns=cols, dtype=float)
+
+    for lang in languages:
+        df = results_by_language[lang]
+        for m1 in methods_order:
+            for m2 in methods_order:
+                if m1 == m2:
+                    pval = np.nan
+                else:
+                    mask = (df["method1"] == m1) & (df["method2"] == m2)
+                    if mask.any():
+                        pval = float(df.loc[mask, "p_adj"].iloc[0])
+                    else:
+                        pval = np.nan
+                pval_table.loc[m1, (lang, m2)] = pval
+
+    latex = pval_table.to_latex(float_format="%.3f", na_rep="NaN")
+    with open(save_path, "w") as f:
+        f.write(latex)
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Analyze test suite reduction methods using statistical tests."
@@ -338,6 +405,15 @@ def main():
     # Plot performance across budgets by algorithm family and language
     plot_by_algorithm_family_and_language("outputs/fdl_across_budget.png", df)
 
+    plot_by_algorithm_family(
+        "outputs/fdl_across_budget_c.png", df[df["language"] == "C"]
+    )
+
+    plot_by_algorithm_family(
+        "outputs/fdl_across_budget_java.png", df[df["language"] == "Java"]
+    )
+
+    results_by_language = {}
     for language in ["C", "Java"]:
         print(f"\n=== Analysis for {language} ===\n")
         df_lang = filter_by_language(df, language)
@@ -353,6 +429,7 @@ def main():
                 "Significant differences found between methods, proceeding to pairwise Wilcoxon tests."
             )
             results = run_pairwise_wilcoxon(pivot, args.correction)
+            results_by_language[language] = results
             print(results.sort_values(by="p_adj"))
             plot_rejection_matrix(
                 results,
@@ -362,6 +439,9 @@ def main():
             )
         else:
             print("No significant differences found.")
+
+    # After analyzing all languages, export a Latex table of p-values for the rejection matrix
+    export_pvalues_latex(results_by_language, "outputs/pvalues_rejection_matrix.tex")
 
 
 if __name__ == "__main__":
